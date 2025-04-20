@@ -28,5 +28,9 @@ STACKSIZE = $(CONFIG_DEFAULT_TASK_STACKSIZE)
 MODULE = $(CONFIG_EXAMPLE_MOTOR_SENSING)
 
 MAINSRC = motor_sensing_main.c
+MAINSRC += qencoder_main.c
+
+#PROGNAME += motor_sensing
+PROGNAME += qencoder
 
 include $(APPDIR)/Application.mk
