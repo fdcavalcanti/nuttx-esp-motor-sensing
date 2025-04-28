@@ -1,0 +1,10 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config EXAMPLE_MOTOR_IMU_DATA
+	tristate "Motor IMU Data Example"
+	default n
+	---help---
+		Enable the Motor IMU Data example

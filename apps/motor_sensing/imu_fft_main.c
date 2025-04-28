@@ -1,5 +1,5 @@
 /***************************************************************************
- * apps/motor_sensing/imu_main.c
+ * apps/motor_sensing/imu_fft_main.c
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,12 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdlib.h>
+#include <math.h>
 #include <nuttx/sensors/sensor.h>
+
+#include "kiss_fft.h"
+#include "tools/kiss_fftr.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -33,7 +38,13 @@
 #define REG_LOW_MASK    0xFF00
 #define REG_HIGH_MASK   0x00FF
 #define MPU6050_AFS_SEL 4096.0f   /* Accel scale factor */
-#define SAMPLE_RATE_MS  100       /* 10 Hz sample rate */
+#define SAMPLE_RATE_MS  20        /* 50 Hz sample rate */
+#define NUM_SAMPLES     128       /* FFT size */
+#define SAMPLE_FREQ     50        /* Sampling frequency in Hz */
+
+/* KissFFT configuration */
+#define KISS_FFT_ALIGN_SIZE (sizeof(void*))
+#define KISS_FFT_CFG_SIZE   (sizeof(struct kiss_fft_state) + sizeof(kiss_fft_cpx)*(NUM_SAMPLES-1))
 
 /****************************************************************************
  * Private Types
@@ -49,6 +60,16 @@ struct mpu6050_imu_msg
   int16_t gyro_y;
   int16_t gyro_z;
 };
+
+/****************************************************************************
+ * Private Data
+ ****************************************************************************/
+
+/* Static allocation for FFT buffers */
+static kiss_fft_cpx g_fft_in[NUM_SAMPLES];
+static kiss_fft_cpx g_fft_out[NUM_SAMPLES];
+static char g_fft_cfg_buffer[KISS_FFT_CFG_SIZE] __attribute__((aligned(KISS_FFT_ALIGN_SIZE)));
+static kiss_fft_cfg g_fft_cfg;
 
 /****************************************************************************
  * Private Functions
@@ -84,6 +105,45 @@ static void read_mpu6050(int fd, struct sensor_accel *acc_data)
   acc_data->z = raw_imu.acc_z / MPU6050_AFS_SEL;
 }
 
+static void process_fft(float *samples, int nsamples)
+{
+  float freq_step;
+  int i;
+
+  /* Initialize FFT configuration if not done */
+  if (g_fft_cfg == NULL)
+    {
+      g_fft_cfg = kiss_fft_alloc(nsamples, 0, g_fft_cfg_buffer, &g_fft_cfg_buffer);
+    }
+
+  /* Clear FFT buffers */
+  memset(g_fft_in, 0, sizeof(g_fft_in));
+  memset(g_fft_out, 0, sizeof(g_fft_out));
+
+  /* Copy samples to input buffer and set imaginary part to 0 */
+  for (i = 0; i < nsamples; i++)
+    {
+      g_fft_in[i].r = samples[i];
+      g_fft_in[i].i = 0;
+    }
+
+  /* Perform FFT */
+  kiss_fft(g_fft_cfg, g_fft_in, g_fft_out);
+
+  /* Calculate frequency step */
+  freq_step = (float)SAMPLE_FREQ / nsamples;
+
+  /* Print real part of FFT output */
+  printf("FFT Output (Real Part):\n");
+  printf("Freq(Hz) | Magnitude\n");
+  for (i = 0; i < nsamples/2 + 1; i++)
+    {
+      float freq = i * freq_step;
+      float magnitude = sqrtf(g_fft_out[i].r * g_fft_out[i].r + g_fft_out[i].i * g_fft_out[i].i);
+      printf("%.2f | %.6f\n", freq, magnitude);
+    }
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -92,9 +152,13 @@ int main(int argc, FAR char *argv[])
 {
   int fd;
   struct sensor_accel acc_data;
+  float samples[NUM_SAMPLES];
+  int sample_count = 0;
 
-  printf("MPU60x0 Accelerometer Test\n");
-  printf("Sample Rate: %d ms\n", SAMPLE_RATE_MS);
+  printf("MPU60x0 Accelerometer FFT Test\n");
+  printf("Sample Rate: %d Hz\n", SAMPLE_FREQ);
+  printf("Number of samples: %d\n", NUM_SAMPLES);
+  printf("Frequency Resolution: %.3f Hz\n", (float)SAMPLE_FREQ/NUM_SAMPLES);
 
   fd = open("/dev/imu0", O_RDONLY);
   if (fd < 0)
@@ -107,8 +171,16 @@ int main(int argc, FAR char *argv[])
     {
       read_mpu6050(fd, &acc_data);
 
-      printf("Accel (g): X=%.2f Y=%.2f Z=%.2f\n",
-             acc_data.x, acc_data.y, acc_data.z);
+      /* Store X-axis acceleration */
+      samples[sample_count] = acc_data.x;
+      sample_count++;
+
+      /* When we have enough samples, perform FFT */
+      if (sample_count >= NUM_SAMPLES)
+        {
+          process_fft(samples, NUM_SAMPLES);
+          sample_count = 0;
+        }
 
       usleep(SAMPLE_RATE_MS * 1000);
     }

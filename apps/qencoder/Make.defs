@@ -1,5 +1,5 @@
 ############################################################################
-# apps/motor_sensing/Makefile
+# apps/motor_sensing/Make.defs
 #
 # SPDX-License-Identifier: BSD-3-Clause
 #
@@ -20,15 +20,6 @@
 #
 ############################################################################
 
-include $(APPDIR)/Make.defs
-
-PROGNAME = msense
-PRIORITY = SCHED_PRIORITY_DEFAULT
-STACKSIZE = $(CONFIG_DEFAULT_TASK_STACKSIZE)
-MODULE = $(CONFIG_EXAMPLE_MOTOR_SENSING)
-
-#CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/math/kissfft/kissfft
-
-MAINSRC = motor_sensing_main.c
-
-include $(APPDIR)/Application.mk
+ifneq ($(CONFIG_EXAMPLE_QENCODER_MOTOR),)
+CONFIGURED_APPS += $(APPDIR)/external/qencoder
+endif

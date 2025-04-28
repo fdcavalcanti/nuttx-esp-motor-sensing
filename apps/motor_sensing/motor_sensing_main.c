@@ -30,15 +30,18 @@
 #include <string.h>
 #include <stdbool.h>
 #include <nuttx/motor/motor.h>
+#include <nuttx/analog/adc.h>
+#include <nuttx/analog/ioctl.h>
 
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
 
 #define MOTOR_DEVPATH "/dev/motor0"
-#define SPEED_FILE "/mnt/mspeed"
+#define ADC_DEVPATH "/dev/adc0"
+#define ADC_MIN_THRESHOLD 100
+#define ADC_MAX_THRESHOLD 2500
 #define TASK_DELAY_US 100000
-#define SPEED_BUF_SIZE 32
 
 /****************************************************************************
  * Private Data
@@ -64,21 +67,20 @@ static void show_help(void)
 {
   printf("Usage:\n");
   printf("  motor_sensing [options]\n");
-  printf("Options:\n");
-  printf("  -s <speed> : Set initial motor speed (0.0 to 1.0)\n");
+  printf("\nDescription:\n");
+  printf("  Controls motor speed based on ADC readings from channel 0.\n");
+  printf("  ADC values < %d: Motor stops\n", ADC_MIN_THRESHOLD);
+  printf("  ADC values > %d: Full speed\n", ADC_MAX_THRESHOLD);
+  printf("  Values in between are mapped linearly to speed (0.0 to 1.0)\n");
+  printf("\nOptions:\n");
   printf("  -x         : Stop motor\n");
   printf("  -h         : Show this help message\n");
-  printf("\nTo change speed while running:\n");
-  printf("  echo \"<speed>\" > %s\n", SPEED_FILE);
 }
-
-/****************************************************************************
- * Private Functions
- ****************************************************************************/
 
 static int motor_set_speed(int fd, float speed)
 {
   int ret;
+  struct motor_state_s state;
 
   if (speed < 0.0 || speed > 1.0)
     {
@@ -87,6 +89,14 @@ static int motor_set_speed(int fd, float speed)
     }
 
   printf("Setting motor speed to: %f\n", speed);
+
+  /* Get current motor state */
+  ret = ioctl(fd, MTRIOC_GET_STATE, (unsigned long)&state);
+  if (ret < 0)
+    {
+      printf("Failed to get motor state: %d\n", ret);
+      return ret;
+    }
 
   ret = ioctl(fd, MTRIOC_SET_MODE, MOTOR_OPMODE_SPEED);
   if (ret < 0)
@@ -103,11 +113,15 @@ static int motor_set_speed(int fd, float speed)
       return ret;
     }
 
-  ret = ioctl(fd, MTRIOC_START, 0);
-  if (ret < 0)
+  /* Only start if not already running */
+  if (state.state != MOTOR_STATE_RUN)
     {
-      printf("Failed to start motor: %d\n", ret);
-      return ret;
+      ret = ioctl(fd, MTRIOC_START, 0);
+      if (ret < 0)
+        {
+          printf("Failed to start motor: %d\n", ret);
+          return ret;
+        }
     }
 
   return OK;
@@ -130,53 +144,53 @@ static int motor_stop(int fd)
   return OK;
 }
 
-static int create_speed_file(void)
+static int check_speed_update(int adc_fd, float *speed)
 {
-  int fd;
+  int ret;
+  struct adc_msg_s sample;
+  size_t readsize;
+  ssize_t nbytes;
 
-  fd = creat(SPEED_FILE, 0666);
-  if (fd < 0)
+  if (speed == NULL)
     {
-      printf("Failed to create speed file %s: %d\n", SPEED_FILE, fd);
       return ERROR;
     }
 
-  close(fd);
-  return OK;
-}
-
-static int check_speed_update(int motor_fd)
-{
-  int fd;
-  char buf[SPEED_BUF_SIZE];
-  ssize_t nbytes;
-  float new_speed;
-
-  fd = open(SPEED_FILE, O_RDONLY | O_NONBLOCK);
-  if (fd < 0)
+  /* Trigger ADC conversion */
+  ret = ioctl(adc_fd, ANIOC_TRIGGER, 0);
+  if (ret < 0)
     {
-      return OK;
+      printf("ANIOC_TRIGGER ioctl failed: %d\n", errno);
+      return ERROR;
     }
 
-  nbytes = read(fd, buf, sizeof(buf) - 1);
-  close(fd);
-
+  /* Read ADC value */
+  readsize = sizeof(struct adc_msg_s);
+  nbytes = read(adc_fd, &sample, readsize);
   if (nbytes <= 0)
     {
-      return OK;
+      printf("ADC read failed: %d\n", errno);
+      return ERROR;
     }
 
-  buf[nbytes] = '\0';
-  new_speed = atof(buf);
-
-  /* Clear the speed file */
-  fd = open(SPEED_FILE, O_WRONLY | O_TRUNC);
-  if (fd >= 0)
+  /* Apply thresholds and map ADC value to speed */
+  if (sample.am_data < ADC_MIN_THRESHOLD)
     {
-      close(fd);
+      *speed = 0.0;
+    }
+  else if (sample.am_data > ADC_MAX_THRESHOLD)
+    {
+      *speed = 1.0;
+    }
+  else
+    {
+      /* Linear mapping from ADC range to speed range */
+      *speed = (float)(sample.am_data - ADC_MIN_THRESHOLD) /
+               (float)(ADC_MAX_THRESHOLD - ADC_MIN_THRESHOLD);
     }
 
-  return motor_set_speed(motor_fd, new_speed);
+  printf("ADC Value: %" PRId32 " | Motor Speed: %.2f\n", sample.am_data, *speed);
+  return OK;
 }
 
 /****************************************************************************
@@ -185,82 +199,89 @@ static int check_speed_update(int motor_fd)
 
 int main(int argc, FAR char *argv[])
 {
-  int fd;
+  int motor_fd;
+  int adc_fd;
   int ret = OK;
   float speed;
 
-  /* Check arguments */
-
-  if (argc < 2)
-    {
-      show_help();
-      return ERROR;
-    }
-
-  /* Create speed control file */
-  ret = create_speed_file();
-  if (ret < 0)
-    {
-      return ERROR;
-    }
-
   /* Open motor device */
-
-  fd = open(MOTOR_DEVPATH, O_RDWR);
-  if (fd < 0)
+  motor_fd = open(MOTOR_DEVPATH, O_RDWR);
+  if (motor_fd < 0)
     {
       printf("Failed to open motor device\n");
       return ERROR;
     }
 
-  /* Set motor limits */
+  /* Open ADC device */
+  adc_fd = open(ADC_DEVPATH, O_RDWR);
+  if (adc_fd < 0)
+    {
+      printf("Failed to open ADC device: %d\n", errno);
+      close(motor_fd);
+      return ERROR;
+    }
 
-  ret = ioctl(fd, MTRIOC_SET_LIMITS, &limits);
+  /* Set motor limits */
+  ret = ioctl(motor_fd, MTRIOC_SET_LIMITS, &limits);
   if (ret < 0)
     {
       printf("Failed to set motor limits\n");
-      close(fd);
+      close(motor_fd);
+      close(adc_fd);
       return ERROR;
     }
 
-  /* Parse command line arguments */
-
-  if (!strcmp(argv[1], "-h"))
+  /* Parse command line arguments if provided */
+  if (argc > 1)
     {
-      show_help();
-      close(fd);
-      return OK;
-    }
-  else if (!strcmp(argv[1], "-x"))
-    {
-      ret = motor_stop(fd);
-    }
-  else if (!strcmp(argv[1], "-s") && argc == 3)
-    {
-      speed = atof(argv[2]);
-      ret = motor_set_speed(fd, speed);
-      if (ret < 0)
+      if (!strcmp(argv[1], "-h"))
         {
-          close(fd);
+          show_help();
+          close(motor_fd);
+          close(adc_fd);
+          return OK;
+        }
+      else if (!strcmp(argv[1], "-x"))
+        {
+          ret = motor_stop(motor_fd);
+          close(motor_fd);
+          close(adc_fd);
           return ret;
         }
-    }
-  else
-    {
-      printf("Invalid arguments\n");
-      show_help();
-      close(fd);
-      return ERROR;
+      else
+        {
+          printf("Invalid arguments\n");
+          show_help();
+          close(motor_fd);
+          close(adc_fd);
+          return ERROR;
+        }
     }
 
   /* Keep task running with delay and check for speed updates */
+  printf("Starting motor control with ADC input...\n");
   while (!g_should_exit)
     {
-      check_speed_update(fd);
+      ret = check_speed_update(adc_fd, &speed);
+      if (ret == OK)
+        {
+          ret = motor_set_speed(motor_fd, speed);
+          if (ret != OK)
+            {
+              printf("Failed to set motor speed\n");
+              break;
+            }
+        }
+      else
+        {
+          printf("Failed to update speed from ADC\n");
+          break;
+        }
+
       usleep(TASK_DELAY_US);
     }
 
-  close(fd);
-  unlink(SPEED_FILE);
+  close(motor_fd);
+  close(adc_fd);
   return ret;
 }

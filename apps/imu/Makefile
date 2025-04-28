@@ -1,5 +1,5 @@
 ############################################################################
-# apps/motor_sensing/Makefile
+# apps/imu/Makefile
 #
 # SPDX-License-Identifier: BSD-3-Clause
 #
@@ -22,13 +22,11 @@
 
 include $(APPDIR)/Make.defs
 
-PROGNAME = msense
+PROGNAME = imu
 PRIORITY = SCHED_PRIORITY_DEFAULT
 STACKSIZE = $(CONFIG_DEFAULT_TASK_STACKSIZE)
-MODULE = $(CONFIG_EXAMPLE_MOTOR_SENSING)
+MODULE = $(CONFIG_EXAMPLE_MOTOR_IMU_DATA)
 
-#CFLAGS += ${INCDIR_PREFIX}$(APPDIR)/math/kissfft/kissfft
-
-MAINSRC = motor_sensing_main.c
+MAINSRC = imu_main.c
 
 include $(APPDIR)/Application.mk
