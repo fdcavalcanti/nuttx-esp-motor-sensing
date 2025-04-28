@@ -88,7 +88,7 @@ static int motor_set_speed(int fd, float speed)
       return ERROR;
     }
 
-  printf("Setting motor speed to: %f\n", speed);
+  // printf("Setting motor speed to: %f\n", speed);
 
   /* Get current motor state */
   ret = ioctl(fd, MTRIOC_GET_STATE, (unsigned long)&state);
@@ -189,7 +189,7 @@ static int check_speed_update(int adc_fd, float *speed)
                (float)(ADC_MAX_THRESHOLD - ADC_MIN_THRESHOLD);
     }
 
-  printf("ADC Value: %" PRId32 " | Motor Speed: %.2f\n", sample.am_data, *speed);
+  // printf("ADC Value: %" PRId32 " | Motor Speed: %.2f\n", sample.am_data, *speed);
   return OK;
 }
 
