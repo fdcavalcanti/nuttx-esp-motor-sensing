@@ -32,6 +32,7 @@
 #include <nuttx/motor/motor.h>
 #include <nuttx/analog/adc.h>
 #include <nuttx/analog/ioctl.h>
+#include <nuttx/sensors/qencoder.h>
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -39,9 +40,13 @@
 
 #define MOTOR_DEVPATH "/dev/motor0"
 #define ADC_DEVPATH "/dev/adc0"
+#define QE_DEVPATH "/dev/qe0"
 #define ADC_MIN_THRESHOLD 100
 #define ADC_MAX_THRESHOLD 2500
-#define TASK_DELAY_US 100000
+#define TASK_DELAY_MS 100
+#define BASE_PPR 11        /* Base encoder PPR */
+#define GEAR_RATIO 34      /* Gear reduction ratio */
+#define PULSES_PER_REV (BASE_PPR * GEAR_RATIO)
 
 /****************************************************************************
  * Private Data
@@ -73,8 +78,17 @@ static void show_help(void)
   printf("  ADC values > %d: Full speed\n", ADC_MAX_THRESHOLD);
   printf("  Values in between are mapped linearly to speed (0.0 to 1.0)\n");
   printf("\nOptions:\n");
-  printf("  -x         : Stop motor\n");
   printf("  -h         : Show this help message\n");
+}
+
+static float calculate_rpm(int32_t pulses, uint32_t time_ms)
+{
+  /* Convert encoder pulses to RPM:
+   * RPM = (pulses/4 / PULSES_PER_REV) * (60000 / time_ms)
+   * Note: divide by 4 because driver uses X4 encoding by default
+   */
+
+  return ((float)(pulses/4) * 60000.0f) / ((float)PULSES_PER_REV * (float)time_ms);
 }
 
 static int motor_set_speed(int fd, float speed)
@@ -87,8 +101,6 @@ static int motor_set_speed(int fd, float speed)
       printf("Error: Speed must be between 0.0 and 1.0\n");
       return ERROR;
     }
-
-  // printf("Setting motor speed to: %f\n", speed);
 
   /* Get current motor state */
   ret = ioctl(fd, MTRIOC_GET_STATE, (unsigned long)&state);
@@ -127,23 +139,6 @@ static int motor_set_speed(int fd, float speed)
   return OK;
 }
 
-static int motor_stop(int fd)
-{
-  int ret;
-
-  printf("Stopping motor\n");
-
-  ret = ioctl(fd, MTRIOC_STOP, 0);
-  if (ret < 0)
-    {
-      printf("Failed to stop motor: %d\n", ret);
-      return ret;
-    }
-
-  g_should_exit = true;
-  return OK;
-}
-
 static int check_speed_update(int adc_fd, float *speed)
 {
   int ret;
@@ -160,7 +155,7 @@ static int check_speed_update(int adc_fd, float *speed)
   ret = ioctl(adc_fd, ANIOC_TRIGGER, 0);
   if (ret < 0)
     {
-      printf("ANIOC_TRIGGER ioctl failed: %d\n", errno);
+      printf("Failed to trigger ADC: %d\n", errno);
       return ERROR;
     }
 
@@ -169,7 +164,7 @@ static int check_speed_update(int adc_fd, float *speed)
   nbytes = read(adc_fd, &sample, readsize);
   if (nbytes <= 0)
     {
-      printf("ADC read failed: %d\n", errno);
+      printf("Failed to read ADC: %d\n", errno);
       return ERROR;
     }
 
@@ -189,7 +184,6 @@ static int check_speed_update(int adc_fd, float *speed)
                (float)(ADC_MAX_THRESHOLD - ADC_MIN_THRESHOLD);
     }
 
-  // printf("ADC Value: %" PRId32 " | Motor Speed: %.2f\n", sample.am_data, *speed);
   return OK;
 }
 
@@ -201,8 +195,27 @@ int main(int argc, FAR char *argv[])
 {
   int motor_fd;
   int adc_fd;
+  int qe_fd;
   int ret = OK;
   float speed;
+  int position;
+  float rpm;
+
+  /* Parse command line arguments if provided */
+  if (argc > 1)
+    {
+      if (!strcmp(argv[1], "-h"))
+        {
+          show_help();
+          return OK;
+        }
+      else
+        {
+          printf("Invalid arguments\n");
+          show_help();
+          return ERROR;
+        }
+    }
 
   /* Open motor device */
   motor_fd = open(MOTOR_DEVPATH, O_RDWR);
@@ -221,6 +234,16 @@ int main(int argc, FAR char *argv[])
       return ERROR;
     }
 
+  /* Open encoder device */
+  qe_fd = open(QE_DEVPATH, O_RDWR);
+  if (qe_fd < 0)
+    {
+      printf("Failed to open encoder device: %d\n", errno);
+      close(motor_fd);
+      close(adc_fd);
+      return ERROR;
+    }
+
   /* Set motor limits */
   ret = ioctl(motor_fd, MTRIOC_SET_LIMITS, &limits);
   if (ret < 0)
@@ -228,40 +251,30 @@ int main(int argc, FAR char *argv[])
       printf("Failed to set motor limits\n");
       close(motor_fd);
       close(adc_fd);
+      close(qe_fd);
       return ERROR;
     }
 
-  /* Parse command line arguments if provided */
-  if (argc > 1)
+  /* Reset encoder counter */
+  ret = ioctl(qe_fd, QEIOC_RESET, 0);
+  if (ret < 0)
     {
-      if (!strcmp(argv[1], "-h"))
-        {
-          show_help();
-          close(motor_fd);
-          close(adc_fd);
-          return OK;
-        }
-      else if (!strcmp(argv[1], "-x"))
-        {
-          ret = motor_stop(motor_fd);
-          close(motor_fd);
-          close(adc_fd);
-          return ret;
-        }
-      else
-        {
-          printf("Invalid arguments\n");
-          show_help();
-          close(motor_fd);
-          close(adc_fd);
-          return ERROR;
-        }
+      printf("Failed to reset encoder: %d\n", ret);
+      close(motor_fd);
+      close(adc_fd);
+      close(qe_fd);
+      return ERROR;
     }
 
   /* Keep task running with delay and check for speed updates */
-  printf("Starting motor control with ADC input...\n");
+  printf("Reading ADC and controlling motor...\n");
+  printf("Sample time: %d ms\n", TASK_DELAY_MS);
+  printf("ADC range: %d to %d\n", ADC_MIN_THRESHOLD, ADC_MAX_THRESHOLD);
+  printf("Encoder PPR: %d\n", PULSES_PER_REV);
+
   while (!g_should_exit)
     {
+      /* Get commanded speed from ADC */
       ret = check_speed_update(adc_fd, &speed);
       if (ret == OK)
         {
@@ -278,10 +291,31 @@ int main(int argc, FAR char *argv[])
           break;
         }
 
-      usleep(TASK_DELAY_US);
+      /* Read encoder position */
+      ret = ioctl(qe_fd, QEIOC_POSITION, (unsigned long)((uintptr_t)&position));
+      if (ret < 0)
+        {
+          printf("Failed to read position: %d\n", ret);
+          break;
+        }
+
+      /* Reset counter to avoid overflow */
+      ret = ioctl(qe_fd, QEIOC_RESET, 0);
+      if (ret < 0)
+        {
+          printf("Failed to reset encoder: %d\n", ret);
+          break;
+        }
+
+      /* Calculate and display speeds */
+      rpm = calculate_rpm(position, TASK_DELAY_MS);
+      printf("Command: %.2f%%, Speed: %.2f RPM\n", speed * 100.0f, rpm);
+
+      usleep(TASK_DELAY_MS * 1000);
     }
 
   close(motor_fd);
   close(adc_fd);
+  close(qe_fd);
   return ret;
 }
