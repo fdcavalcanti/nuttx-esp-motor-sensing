@@ -19,6 +19,8 @@ Demonstrates how to use multiple ESP32-C6 peripherals with NuttX RTOS:
 - 10kΩ linear potentiometer
 - GY521 IMU module (MPU6050)
 
+![Test Bench Setup](imgs/test_bench.png "Motor Control Test Bench")
+
 ## GPIO Connections
 
 - GPIO 20: MCPWM output to H-Bridge
@@ -61,6 +63,8 @@ The application will display:
 - Command speed (from potentiometer)
 - Actual motor speed in RPM (from encoder)
 - Sample time and encoder configuration
+
+![Motor Control in Action](imgs/motor_spin.gif "Real-time motor control using potentiometer")
 
 ## License
 
