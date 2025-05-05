@@ -88,7 +88,7 @@ static float calculate_rpm(int32_t pulses, uint32_t time_ms)
    * Note: divide by 4 because driver uses X4 encoding by default
    */
 
-  return ((float)(pulses/4) * 60000.0f) / ((float)PULSES_PER_REV * (float)time_ms);
+  return ((float)(pulses / 4.0f) * 60000.0f) / ((float)PULSES_PER_REV * (float)time_ms);
 }
 
 static int motor_set_speed(int fd, float speed)
