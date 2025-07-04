@@ -116,9 +116,9 @@ def plot_results(x_data, y_data, z_data):
     _, y_fft = calculate_fft(y_data)
     _, z_fft = calculate_fft(z_data)
     
-    ax2.plot(freqs, x_fft, label='X')
-    ax2.plot(freqs, y_fft, label='Y')
-    ax2.plot(freqs, z_fft, label='Z')
+    ax2.plot(freqs[1:], x_fft[1:], label='X')
+    ax2.plot(freqs[1:], y_fft[1:], label='Y')
+    ax2.plot(freqs[1:], z_fft[1:], label='Z')
     ax2.set_xlabel('Frequency (Hz)')
     ax2.set_ylabel('Magnitude')
     ax2.set_title('Frequency Domain (FFT)')

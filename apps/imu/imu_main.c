@@ -98,7 +98,7 @@ static void read_mpu6050(int fd, struct sensor_accel *acc_data)
 int main(int argc, FAR char *argv[])
 {
   int fd;
-  struct sensor_accel acc_data;
+  struct sensor_accel acc_data = {0};
   char msg_buffer[MAX_MSG_SIZE];
   
   /* Socket variables */
